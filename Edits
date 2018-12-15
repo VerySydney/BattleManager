@@ -1,0 +1,191 @@
+BattleManager edits:
+
+module BattleManager
+  
+  def self.init_members
+    @phase = :init              # Battle Progress Phase
+    @can_escape = false         # Can Escape Flag
+    @can_lose = false           # Can Lose Flag
+    @event_proc = nil           # Event Callback
+    @preemptive = false         # Preemptive Attack Flag
+    @surprise = false           # Surprise Flag
+    @actor_index = -1           # Actor for Which Command Is Being Entered
+    @action_forced = nil        # Force Action
+    @map_bgm = nil              # For Memorizing Pre-Battle BGM
+    @map_bgs = nil              # For Memorizing Pre-Battle BGS
+    @action_battlers = []       # Action Order List
+    @actor_order = []
+    @player_phase = true
+    @enemy_phase = false
+    @action_points = 0
+  end
+  
+  def self.action_points?
+    return true unless @action_points == 0
+  end
+  
+  def self.action_points_amount
+    return @action_points
+  end
+  
+  def self.action_points_cost(cost = 0)
+    @action_points -= cost
+#    msgbox_p(@action_points)
+  end
+  
+  def self.default_action_points
+    if @player_phase == true
+      @action_points = $game_party.members.size
+    elsif @enemy_phase == true
+      @action_points = $game_troop.members.size
+    else @action_points = nil;
+    end
+  end
+  
+  def self.input_entered?
+    return !@action_battlers.empty?
+  end
+  
+  def self.next_command
+    begin
+      if !actor || !actor.next_command
+        @actor_index += 1
+        if @actor_index >= $game_party.members.size
+          @actor_index = 0
+        end
+      end
+    end until actor.inputable?
+    return true
+  end
+  
+  def self.battle_start
+    $game_system.battle_count += 1
+    $game_party.on_battle_start
+    $game_troop.on_battle_start
+    $game_troop.enemy_names.each do |name|
+      $game_message.add(sprintf(Vocab::Emerge, name))
+    end
+    if @preemptive
+      $game_message.add(sprintf(Vocab::Preemptive, $game_party.name))
+    elsif @surprise
+      $game_message.add(sprintf(Vocab::Surprise, $game_party.name))
+    end
+    default_action_points
+    wait_for_message
+  end
+  
+  def self.turn_start
+    @phase = :turn
+#    msgbox_p(@action_points)
+  end
+  
+  def self.turn_end
+#    msgbox_p(@action_points)
+    @phase = :turn_end
+    if  @player_phase == true
+        @player_phase = false
+        @enemy_phase = true
+    elsif @enemy_phase == true
+        $game_troop.increase_turn
+        @enemy_phase = false
+        @player_phase = true
+    else return;
+    end
+    clear_actor
+    default_action_points
+    @preemptive = false
+    @surprise = false
+    # msgbox_p(@player_phase)
+  end
+  
+  def self.make_action_orders
+    @action_battlers = []
+    msgbox_p(@actor_index)
+    @action_battlers.push(BattleManager.actor) unless @surprise || @enemy_phase
+    @action_battlers += $game_troop.members unless @preemptive || @player_phase
+    @action_battlers.each {|battler| battler.make_speed }
+    @action_battlers.sort! {|a,b| b.speed - a.speed }
+  end
+  
+  def self.next_subject
+    loop do
+      battler = @action_battlers.shift
+      return nil unless battler
+      next unless battler.index && battler.alive?
+      return battler
+    end
+  end
+  
+end
+
+
+SceneBattle edits:
+
+class Scene_Battle < Scene_Base
+  
+  def update
+    super
+    if BattleManager.input_entered?
+      @actor_command_window.close
+      process_event
+      process_action
+      @actor_command_window.open
+    end
+    BattleManager.judge_win_loss
+  end
+  
+  def next_command
+    BattleManager.make_action_orders
+    if BattleManager.next_command
+      start_actor_command_selection
+    else
+      turn_start
+    end
+  end
+  
+  def command_escape
+    turn_start unless BattleManager.process_escape
+#    $game_party.escape_cost
+  end
+  
+  def process_action
+    return if scene_changing?
+    if !@subject || !@subject.current_action
+      @subject = BattleManager.next_subject
+    end
+#    return turn_end unless @subject
+      if @subject.current_action
+        BattleManager.action_points_cost(@subject.current_action.check_cost)
+        @subject.current_action.prepare
+        if @subject.current_action.valid?
+          @status_window.open
+          execute_action
+        end
+        @subject.remove_current_action
+      end
+    process_action_end unless @subject.current_action
+  end
+  
+  def process_action_end
+    @subject.on_action_end
+    refresh_status
+    @log_window.display_auto_affected_status(@subject)
+    @log_window.wait_and_clear
+    @log_window.display_current_state(@subject)
+    @log_window.wait_and_clear
+    BattleManager.judge_win_loss
+  end
+  
+  def turn_end
+    all_battle_members.each do |battler|
+      battler.on_turn_end
+      refresh_status
+      @log_window.display_auto_affected_status(battler)
+      @log_window.wait_and_clear
+    end
+    BattleManager.turn_end
+    process_event
+    start_actor_command_selection
+  end
+  
+end
